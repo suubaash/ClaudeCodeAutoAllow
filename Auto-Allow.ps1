@@ -19,7 +19,7 @@
 #>
 [CmdletBinding()]
 param(
-    [int]$IntervalMs = 10000,
+    [int]$IntervalMs = 1000,
     [string[]]$ProcessName = @('Claude'),
     [switch]$Inspect
 )
@@ -58,7 +58,11 @@ function Get-AllClaudeElements {
     if (-not $procIds) { return @() }
 
     $root = $AE::RootElement
-    $all = $root.FindAll($TS, $Cond::TrueCondition)
+    # Only enumerate TOP-LEVEL windows (direct children of the desktop root).
+    # Using Descendants here returns every element in the tree, which makes the
+    # same button get found once per ancestor -> repeated clicks / "FAILED" spam.
+    $childScope = [System.Windows.Automation.TreeScope]::Children
+    $all = $root.FindAll($childScope, $Cond::TrueCondition)
     $result = @()
     foreach ($el in $all) {
         try {
@@ -74,6 +78,7 @@ function Find-AllAllowButtons {
 
     $btnCond = New-Object System.Windows.Automation.PropertyCondition($CtrlProp, $BtnType)
     $hits = @()
+    $seen = @{}
     foreach ($el in $elements) {
         try {
             $buttons = $el.FindAll($TS, $btnCond)
@@ -83,10 +88,16 @@ function Find-AllAllowButtons {
                     if (-not $name -or -not $b.Current.IsEnabled) { continue }
                     foreach ($allowed in $AllowNames) {
                         if ($name -like "*$allowed*") {
-                            $hits += [pscustomobject]@{
-                                Element = $b
-                                Name    = $name
-                                PID     = $b.Current.ProcessId
+                            # Dedupe: the same prompt button can surface more than
+                            # once. Key by PID + name so one prompt = one click.
+                            $key = "$($b.Current.ProcessId)|$name"
+                            if (-not $seen.ContainsKey($key)) {
+                                $seen[$key] = $true
+                                $hits += [pscustomobject]@{
+                                    Element = $b
+                                    Name    = $name
+                                    PID     = $b.Current.ProcessId
+                                }
                             }
                             break
                         }
